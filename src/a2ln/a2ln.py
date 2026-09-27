@@ -40,13 +40,14 @@ from PIL import Image
 
 gi.require_version('Notify', '0.7')
 
-from gi.repository import Notify  # type: ignore # noqa: E402
+from gi.repository import Notify, GLib  # type: ignore # noqa: E402
 
 BOLD = "\033[1m"
 RESET = "\033[0m"
 
 DEFAULT_PORT = 23045
 
+active_notifications = []
 
 def main() -> None:
     args = parse_args()
@@ -157,14 +158,142 @@ def get_ip() -> str:
         return client.getsockname()[0]
 
 
-def send_notification(title: str, body: str, picture_file=None) -> None:
+def open_android_app(notification, action, package):
+    print(f"CLICKED! package={package}", flush=True)
+
+    try:
+        subprocess.Popen([
+            "adb",
+            "-s",
+            "192.168.1.45:5555",
+            "shell",
+            "monkey",
+            "-p",
+            package,
+            "1",
+        ])
+
+        subprocess.Popen([
+            "scrcpy",
+            "-s",
+            "192.168.1.45:5555",
+        ])
+
+    except Exception:
+        traceback.print_exc()
+
+def open_android_app(notification, action, package):
+    print(f"CLICKED! package={package}", flush=True)
+
+    try:
+        # Androidの画面を起こす
+        wake_result = subprocess.run(
+            [
+                "adb",
+                "-s",
+                "192.168.1.45:5555",
+                "shell",
+                "input",
+                "keyevent",
+                "KEYCODE_WAKEUP",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        print(
+            f"WAKEUP: {wake_result.returncode}",
+            flush=True,
+        )
+
+        # Linux側へ通知
+        subprocess.Popen([
+            "notify-send",
+            "Android",
+            f"{package} を開きます",
+        ])
+
+        # 解除可能なキーガードなら解除を試す
+        subprocess.run(
+            [
+                "adb",
+                "-s",
+                "192.168.1.45:5555",
+                "shell",
+                "wm",
+                "dismiss-keyguard",
+            ],
+            check=False,
+        )
+
+        # アプリ起動
+        result = subprocess.run(
+            [
+                "adb",
+                "-s",
+                "192.168.1.45:5555",
+                "shell",
+                "monkey",
+                "-p",
+                package,
+                "-c",
+                "android.intent.category.LAUNCHER",
+                "1",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        print("APP:", result.stdout.strip(), flush=True)
+
+        # scrcpy起動
+        subprocess.Popen([
+            "scrcpy",
+            "-s",
+            "192.168.1.45:5555",
+        ])
+
+    except Exception:
+        traceback.print_exc()
+
+def send_notification(
+    title: str,
+    body: str,
+    package: str,
+    picture_file=None,
+) -> None:
+    print(f"SENDING: {package}", flush=True)
+
     if picture_file is None:
-        Notify.Notification.new(title, body, "dialog-information").show()
+        notification = Notify.Notification.new(
+            title,
+            body,
+            "dialog-information",
+        )
     else:
-        Notify.Notification.new(title, body, picture_file.name).show()
+        notification = Notify.Notification.new(
+            title,
+            body,
+            picture_file.name,
+        )
 
+    print("ADDING ACTION", flush=True)
+
+    notification.add_action(
+        "default",
+        "開く",
+        open_android_app,
+        package,
+    )
+
+    # Notificationオブジェクトを生存させる
+    active_notifications.append(notification)
+
+    print("SHOWING", flush=True)
+    notification.show()
+
+    if picture_file is not None:
         picture_file.close()
-
 
 def handle_error(error: zmq.error.ZMQError) -> None:
     if error.errno == zmq.EADDRINUSE:
@@ -223,40 +352,63 @@ class NotificationServer(threading.Thread):
                 Notify.init("Android 2 Linux Notifications")
 
                 while True:
-                    request = server.recv_multipart(copy=False)
+                    if server.poll(100):
+                        request = server.recv_multipart(copy=False)
 
-                    length = len(request)
+                        length = len(request)
 
-                    if length != 4 and length != 5:
-                        continue
+                        if length != 4 and length != 5:
+                            continue
 
-                    if length == 5:
-                        picture_file = tempfile.NamedTemporaryFile(suffix=".png")
+                        if length == 5:
+                            picture_file = tempfile.NamedTemporaryFile(suffix=".png")
 
-                        Image.open(io.BytesIO(request[4].bytes)).save(picture_file.name)
-                    else:
-                        picture_file = None
+                            Image.open(
+                                io.BytesIO(request[4].bytes)
+                            ).save(picture_file.name)
+                        else:
+                            picture_file = None
 
-                    source = request[0].get("Peer-Address") # noqa
-                    app = request[0].bytes.decode("utf-8")
-                    title = request[1].bytes.decode("utf-8")
-                    body = request[2].bytes.decode("utf-8")
-                    package = request[3].bytes.decode("utf-8")
+                        source = request[0].get("Peer-Address")
+                        app = request[0].bytes.decode("utf-8")
+                        title = request[1].bytes.decode("utf-8")
+                        body = request[2].bytes.decode("utf-8")
+                        package = request[3].bytes.decode("utf-8")
 
-                    print()
-                    print(f"Received notification from {BOLD}{source}{RESET} (App: {BOLD}{app}{RESET}, Title: {BOLD}{title}{RESET}, Body: {BOLD}{body}{RESET}, Package: {BOLD}{package}{RESET})")
+                        print()
+                        print(
+                            f"Received notification from {BOLD}{source}{RESET} "
+                            f"(App: {BOLD}{app}{RESET}, "
+                            f"Title: {BOLD}{title}{RESET}, "
+                            f"Body: {BOLD}{body}{RESET}, "
+                            f"Package: {BOLD}{package}{RESET})"
+                        )
 
-                    def replace(text: str) -> str:
-                        return text.replace("{app}", app).replace("{title}", title).replace("{body}", body).replace(
-                            "{package}", package).replace("{source}", source) # noqa
+                        def replace(text: str) -> str:
+                            return (
+                                text.replace("{app}", app)
+                                .replace("{title}", title)
+                                .replace("{body}", body)
+                                .replace("{package}", package)
+                                .replace("{source}", source)
+                            )
 
-                    if not self.disabled:
-                        threading.Thread(target=send_notification,
-                                         args=(replace(self.title_format), replace(self.body_format), picture_file),
-                                         daemon=True).start()
+                        if not self.disabled:
+                            send_notification(
+                                replace(self.title_format),
+                                replace(self.body_format),
+                                package,
+                                picture_file,
+                            )
 
-                    if self.command is not None:
-                        subprocess.Popen(replace(self.command), shell=True)
+                        if self.command is not None:
+                            subprocess.Popen(
+                                replace(self.command),
+                                shell=True,
+                            )
+
+                    while GLib.MainContext.default().iteration(False):
+                        pass
 
     def toggle(self) -> None:
         self.disabled = not self.disabled

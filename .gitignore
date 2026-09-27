@@ -3,3 +3,4 @@ venv/
 build/
 dist/
 src/a2ln.egg-info/
+src/a2ln/__pycache__
