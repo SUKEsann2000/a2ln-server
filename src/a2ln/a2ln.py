@@ -90,7 +90,8 @@ def main() -> None:
         server = PairingServer(clients_directory, own_public_key, args.ip, args.port)
     elif own_secret_key:
         server = NotificationServer(clients_directory, own_public_key, own_secret_key, args.ip, args.port,
-                                    args.title_format, args.body_format, args.command, args.disable)
+                                    args.title_format, args.body_format, args.command, args.disable,
+                                    args.android_ip, args.android_port)
 
         signal.signal(signal.SIGUSR1, lambda number, frame: server.toggle())
     else:
@@ -112,6 +113,8 @@ def main() -> None:
 def parse_args() -> Namespace:
     argument_parser = argparse.ArgumentParser(description="A way to display Android phone notifications on Linux")
 
+    argument_parser.add_argument("--android-ip", type=str, default="192.168.1.45", help="The IP of the Android device")
+    argument_parser.add_argument("--android-port", type=int, default=5555, help="The port of the Android device")
     argument_parser.add_argument("--ip", type=str, default="*", help="The IP to listen")
     argument_parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"The port to listen)")
     argument_parser.add_argument("--title-format", type=str, default="{title}", help="The format of the title. "
@@ -158,14 +161,14 @@ def get_ip() -> str:
         return client.getsockname()[0]
 
 
-def open_android_app(notification, action, package):
+def open_android_app(notification, action, package, android_ip="192.168.1.45", android_port=5555):
     print(f"CLICKED! package={package}", flush=True)
 
     try:
         subprocess.Popen([
             "adb",
             "-s",
-            "192.168.1.45:5555",
+            f"{android_ip}:{android_port}",
             "shell",
             "monkey",
             "-p",
@@ -176,13 +179,13 @@ def open_android_app(notification, action, package):
         subprocess.Popen([
             "scrcpy",
             "-s",
-            "192.168.1.45:5555",
+            f"{android_ip}:{android_port}",
         ])
 
     except Exception:
         traceback.print_exc()
 
-def open_android_app(notification, action, package):
+def open_android_app(notification, action, package, android_ip="192.168.1.45", android_port=5555):
     print(f"CLICKED! package={package}", flush=True)
 
     try:
@@ -191,7 +194,7 @@ def open_android_app(notification, action, package):
             [
                 "adb",
                 "-s",
-                "192.168.1.45:5555",
+                f"{android_ip}:{android_port}",
                 "shell",
                 "input",
                 "keyevent",
@@ -218,7 +221,7 @@ def open_android_app(notification, action, package):
             [
                 "adb",
                 "-s",
-                "192.168.1.45:5555",
+                f"{android_ip}:{android_port}",
                 "shell",
                 "wm",
                 "dismiss-keyguard",
@@ -231,7 +234,7 @@ def open_android_app(notification, action, package):
             [
                 "adb",
                 "-s",
-                "192.168.1.45:5555",
+                f"{android_ip}:{android_port}",
                 "shell",
                 "monkey",
                 "-p",
@@ -250,7 +253,7 @@ def open_android_app(notification, action, package):
         subprocess.Popen([
             "scrcpy",
             "-s",
-            "192.168.1.45:5555",
+            f"{android_ip}:{android_port}",
         ])
 
     except Exception:
@@ -261,6 +264,8 @@ def send_notification(
     body: str,
     package: str,
     picture_file=None,
+    android_ip="192.168.1.45",
+    android_port=5555,
 ) -> None:
     print(f"SENDING: {package}", flush=True)
 
@@ -282,7 +287,7 @@ def send_notification(
     notification.add_action(
         "default",
         "開く",
-        open_android_app,
+        lambda n, a, p: open_android_app(n, a, p, android_ip, android_port),
         package,
     )
 
@@ -308,7 +313,8 @@ def handle_error(error: zmq.error.ZMQError) -> None:
 
 class NotificationServer(threading.Thread):
     def __init__(self, clients_directory: Path, own_public_key: bytes, own_secret_key: bytes, ip: str,
-                 port: int, title_format: str, body_format: str, command: Optional[str], disabled: bool):
+                 port: int, title_format: str, body_format: str, command: Optional[str], disabled: bool,
+                 android_ip: str, android_port: int):
         super(NotificationServer, self).__init__(daemon=True)
 
         self.clients_directory = clients_directory
@@ -320,6 +326,8 @@ class NotificationServer(threading.Thread):
         self.body_format = body_format
         self.command = command
         self.disabled = disabled
+        self.android_ip = android_ip
+        self.android_port = android_port
 
     def run(self) -> None:
         super(NotificationServer, self).run()
@@ -399,6 +407,8 @@ class NotificationServer(threading.Thread):
                                 replace(self.body_format),
                                 package,
                                 picture_file,
+                                self.android_ip,
+                                self.android_port,
                             )
 
                         if self.command is not None:
